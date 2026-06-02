@@ -1,0 +1,108 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <title>WASM + WebGL</title>
+        <style>
+            body {
+                margin: 0;
+                background: #0b0d10;
+                display: grid;
+                place-items: center;
+                height: 100vh;
+            }
+        </style>
+    </head>
+    <body>
+        <canvas id="c" width="500" height="500"></canvas>
+        <script>
+            // WASM module compiled from this WAT:
+            //   (module
+            //     (global $angle (mut f32) (f32.const 0))
+            //     (func (export "step") (param $dt f32) (result f32)
+            //       global.get $angle  local.get $dt  f32.add
+            //       global.set $angle  global.get $angle))
+            const wasmBytes = new Uint8Array([
+                0, 97, 115, 109, 1, 0, 0, 0, 1, 6, 1, 96, 1, 125, 1, 125, 3, 2,
+                1, 0, 6, 9, 1, 125, 1, 67, 0, 0, 0, 0, 11, 7, 8, 1, 4, 115, 116,
+                101, 112, 0, 0, 10, 13, 1, 11, 0, 35, 0, 32, 0, 146, 36, 0, 35,
+                0, 11,
+            ]);
+
+            (async () => {
+                const { instance } = await WebAssembly.instantiate(wasmBytes);
+                const step = instance.exports.step; // <-- the WASM function
+
+                const canvas = document.getElementById("c");
+                const gl = canvas.getContext("webgl");
+                if (!gl)
+                    throw new Error("WebGL is not available in this browser");
+
+                const vs = `
+    attribute vec2 a_pos;
+    uniform mediump float u_angle;
+    void main() {
+      float c = cos(u_angle), s = sin(u_angle);
+      gl_Position = vec4(mat2(c,-s,s,c) * a_pos, 0.0, 1.0);
+    }`;
+                const fs = `
+    precision mediump float;
+    uniform mediump float u_angle;
+    void main() {
+      gl_FragColor = vec4(0.5 + 0.5*cos(u_angle + vec3(0.0,2.1,4.2)), 1.0);
+    }`;
+
+                const compile = (t, src) => {
+                    const sh = gl.createShader(t);
+                    gl.shaderSource(sh, src);
+                    gl.compileShader(sh);
+                    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+                        throw new Error(
+                            "Shader compile failed: " + gl.getShaderInfoLog(sh),
+                        );
+                    }
+                    return sh;
+                };
+                const prog = gl.createProgram();
+                gl.attachShader(prog, compile(gl.VERTEX_SHADER, vs));
+                gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fs));
+                gl.linkProgram(prog);
+                if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+                    throw new Error(
+                        "Program link failed: " + gl.getProgramInfoLog(prog),
+                    );
+                }
+                gl.useProgram(prog);
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+                gl.bufferData(
+                    gl.ARRAY_BUFFER,
+                    new Float32Array([0, 0.6, -0.55, -0.4, 0.55, -0.4]),
+                    gl.STATIC_DRAW,
+                );
+
+                const aPos = gl.getAttribLocation(prog, "a_pos");
+                if (aPos < 0) throw new Error("a_pos attribute not found");
+                gl.enableVertexAttribArray(aPos);
+                gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+                const uAngle = gl.getUniformLocation(prog, "u_angle");
+
+                gl.viewport(0, 0, canvas.width, canvas.height);
+
+                let last = null;
+                function frame(now) {
+                    const dt = last === null ? 0 : (now - last) * 0.001;
+                    last = now;
+                    const angle = step(dt); // <-- WASM advances state
+                    gl.uniform1f(uAngle, angle);
+                    gl.clearColor(0.043, 0.051, 0.063, 1);
+                    gl.clear(gl.COLOR_BUFFER_BIT);
+                    gl.drawArrays(gl.TRIANGLES, 0, 3);
+                    requestAnimationFrame(frame);
+                }
+                requestAnimationFrame(frame);
+            })();
+        </script>
+    </body>
+</html>
